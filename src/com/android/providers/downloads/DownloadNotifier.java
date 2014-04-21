@@ -29,6 +29,8 @@ import android.app.PendingIntent;
 import android.content.ContentUris;
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.ApplicationInfo;
+import android.content.pm.PackageManager;
 import android.content.res.Resources;
 import android.net.Uri;
 import android.os.SystemClock;
@@ -37,6 +39,8 @@ import android.text.TextUtils;
 import android.text.format.DateUtils;
 import android.util.Log;
 import android.util.LongSparseLongArray;
+
+import com.android.providers.downloads.R;
 
 import com.google.common.collect.ArrayListMultimap;
 import com.google.common.collect.Maps;
@@ -58,7 +62,12 @@ public class DownloadNotifier {
 
     private static final int TYPE_ACTIVE = 1;
     private static final int TYPE_WAITING = 2;
-    private static final int TYPE_COMPLETE = 3;
+    private static final int TYPE_PAUSED = 3;
+    private static final int TYPE_COMPLETE = 4;
+
+    private static final int SPEED_KB = 1024;
+    private static final int SPEED_MB = 1048576;
+    private static final int SPEED_GB = 1073741824;
 
     private final Context mContext;
     private final NotificationManager mNotifManager;
@@ -89,7 +98,9 @@ public class DownloadNotifier {
     /**
      * Formatter for giving transfer speeds with maximum of one decimal places
      */
-    private final DecimalFormat mFormatter = new DecimalFormat("#.#");
+    private static final DecimalFormat mFormatter = new DecimalFormat("#.#");
+
+    private static final String SPEED_PLACEHOLDER = "%s %cB/s";
 
     public DownloadNotifier(Context context) {
         mContext = context;
@@ -156,17 +167,32 @@ public class DownloadNotifier {
             }
             builder.setWhen(firstShown);
 
+            // Check error status about downloads. If error exists, will
+            // update icon and content title/content text in notification.
+            boolean hasErrorStatus = false;
+            for (DownloadInfo info : cluster) {
+                 if (isErrorStatus(info.mStatus)) {
+                     hasErrorStatus = true;
+                     break;
+                 }
+            }
+
             // Show relevant icon
             if (type == TYPE_ACTIVE) {
-                builder.setSmallIcon(android.R.drawable.stat_sys_download);
-            } else if (type == TYPE_WAITING) {
+                if (hasErrorStatus) {
+                    builder.setSmallIcon(android.R.drawable.stat_sys_warning);
+                } else {
+                    builder.setSmallIcon(android.R.drawable.stat_sys_download);
+                }
                 builder.setSmallIcon(android.R.drawable.stat_sys_warning);
+             } else if (type == TYPE_PAUSED) {
+                builder.setSmallIcon(com.android.internal.R.drawable.ic_media_pause);
             } else if (type == TYPE_COMPLETE) {
                 builder.setSmallIcon(android.R.drawable.stat_sys_download_done);
             }
 
             // Build action intents
-            if (type == TYPE_ACTIVE || type == TYPE_WAITING) {
+            if (type == TYPE_ACTIVE || type == TYPE_WAITING || type == TYPE_PAUSED) {
                 // build a synthetic uri for intent identification purposes
                 final Uri uri = new Uri.Builder().scheme("active-dl").appendPath(tag).build();
                 final Intent intent = new Intent(Constants.ACTION_LIST,
@@ -184,7 +210,7 @@ public class DownloadNotifier {
                 builder.setAutoCancel(true);
 
                 final String action;
-                if (Downloads.Impl.isStatusError(info.mStatus)) {
+                if (hasErrorStatus) {
                     action = Constants.ACTION_LIST;
                 } else {
                     if (info.mDestination != Downloads.Impl.DESTINATION_SYSTEMCACHE_PARTITION) {
@@ -207,6 +233,7 @@ public class DownloadNotifier {
 
             // Calculate and show progress
             String remainingText = null;
+            String durationText = null;
             String percentText = null;
             String speedText = null;
             if (type == TYPE_ACTIVE) {
@@ -228,26 +255,48 @@ public class DownloadNotifier {
                     percentText = res.getString(R.string.download_percent, percent);
 
                     if (speed > 0) {
-                        // Determine postfix for download speed (B/s, KB/s or MB/s)
-                        String postFix = null;
-                        double speedNormalized = 0.0;
+                        // Decide prefix character for speed string
+                        char preFix;
+                        double speedNormalized = speed;
 
-                        if (speed < 1024) {
-                            postFix = " B/s";
-                            speedNormalized = speed;
-                        } else if (speed < 1048576) {
-                            postFix = " KB/s";
-                            speedNormalized = (double)speed / 1024.0;
-                        } else if (speed < 1073741824) {
-                            postFix = " MB/s";
-                            speedNormalized = (double)speed / 1048576.0;
+                        if (speed < SPEED_KB) {
+                            preFix = '\0';
+                        } else if (speed < SPEED_MB) {
+                            preFix = (res.getString(R.string.kilo_bytes)).charAt(0);
+                            speedNormalized /= SPEED_KB;
+                        } else if (speed < SPEED_GB) {
+                            preFix = (res.getString(R.string.mega_bytes)).charAt(0);
+                            speedNormalized /= SPEED_MB;
+                        } else {
+                            preFix = (res.getString(R.string.giga_bytes)).charAt(0);
+                            speedNormalized /= SPEED_GB;
                         }
 
-                        speedText = mFormatter.format(speedNormalized) + postFix;
+                        // Format the String
+                        speedText = String.format(
+                            SPEED_PLACEHOLDER,
+                            mFormatter.format(speedNormalized).toString(),
+                            preFix
+                        );
 
                         final long remainingMillis = ((total - current) * 1000) / speed;
-                        remainingText = res.getString(R.string.download_remaining,
-                                DateUtils.formatDuration(remainingMillis));
+                        if (remainingMillis >= DateUtils.HOUR_IN_MILLIS) {
+                            final int hours = (int) ((remainingMillis + 1800000)
+                                    / DateUtils.HOUR_IN_MILLIS);
+                            durationText = res.getQuantityString(
+                                    R.plurals.duration_hours, hours, hours);
+                        } else if (remainingMillis >= DateUtils.MINUTE_IN_MILLIS) {
+                            final int minutes = (int) ((remainingMillis + 30000)
+                                    / DateUtils.MINUTE_IN_MILLIS);
+                            durationText = res.getQuantityString(
+                                    R.plurals.duration_minutes, minutes, minutes);
+                        } else {
+                            final int seconds = (int) ((remainingMillis + 500)
+                                    / DateUtils.SECOND_IN_MILLIS);
+                            durationText = res.getQuantityString(
+                                    R.plurals.duration_seconds, seconds, seconds);
+                        }
+                        remainingText = res.getString(R.string.download_remaining, durationText);
                     }
 
                     builder.setProgress(100, percent, false);
@@ -258,72 +307,219 @@ public class DownloadNotifier {
 
             // Build titles and description
             final Notification notif;
+            String contentText = null;
             if (cluster.size() == 1) {
                 final Notification.InboxStyle inboxStyle = new Notification.InboxStyle(builder);
 
                 final DownloadInfo info = cluster.iterator().next();
+                final Uri uris = ContentUris.withAppendedId(
+                       Downloads.Impl.ALL_DOWNLOADS_CONTENT_URI, info.mId);
 
-                final String filename = getDownloadTitle(res, info).toString();
+                builder.setContentTitle(getDownloadTitle(res, info));
 
-                inboxStyle.addLine(filename);
-                builder.setContentTitle(filename);
+                final Intent stopIntent = new Intent(Constants.ACTION_NOTIFICATION_STOP,
+                        uris, mContext, DownloadReceiver.class);
+                stopIntent.putExtra(DownloadManager.EXTRA_NOTIFICATION_CLICK_DOWNLOAD_IDS,
+                           getDownloadIds(cluster));
 
-                String contentText = null;
+                final Intent pauseIntent = new Intent(Constants.ACTION_NOTIFICATION_PAUSE,
+                        uris, mContext, DownloadReceiver.class);
+                pauseIntent.putExtra(DownloadManager.EXTRA_NOTIFICATION_CLICK_DOWNLOAD_IDS,
+                           getDownloadIds(cluster));
+
+                final Intent resumeIntent = new Intent(Constants.ACTION_NOTIFICATION_RESUME,
+                        uris, mContext, DownloadReceiver.class);
+                resumeIntent.putExtra(DownloadManager.EXTRA_NOTIFICATION_CLICK_DOWNLOAD_IDS,
+                           getDownloadIds(cluster));
+
+                final Intent retryIntent = new Intent(Constants.ACTION_NOTIFICATION_RETRY,
+                        uris, mContext, DownloadReceiver.class);
+                retryIntent.putExtra(DownloadManager.EXTRA_NOTIFICATION_CLICK_DOWNLOAD_IDS,
+                           getDownloadIds(cluster));
+
+                if (!TextUtils.isEmpty(info.mDescription)) {
+                    inboxStyle.addLine(info.mDescription);
+                } else if (!TextUtils.isEmpty(info.mPackage)) {
+                    final PackageManager pm = mContext.getApplicationContext().getPackageManager();
+                    ApplicationInfo ai;
+                    try {
+                        ai = pm.getApplicationInfo(info.mPackage, 0);
+                    } catch (final PackageManager.NameNotFoundException e) {
+                        ai = null;
+                    }
+                    final String packageName = (String) (ai != null ? pm.getApplicationLabel(ai) : "(unknown)");
+                    if (!TextUtils.isEmpty(packageName)) {
+                        inboxStyle.addLine(packageName);
+                    }
+                }
 
                 if (type == TYPE_ACTIVE) {
-                    if (!TextUtils.isEmpty(info.mDescription)) {
-                        builder.setContentText(info.mDescription);
-                    } else {
-                        builder.setContentText(remainingText);
-                    }
-
-                    if (TextUtils.isEmpty(speedText) || TextUtils.isEmpty(remainingText)) {
+                    if (hasErrorStatus) {
+                        contentText = res.getString(R.string.notification_download_failed);
+                    } else if (TextUtils.isEmpty(speedText)
+                               && TextUtils.isEmpty(remainingText)) {
                         contentText = res.getString(R.string.download_running);
+                    } else if (!TextUtils.isEmpty(remainingText) && TextUtils.isEmpty(speedText)) {
+                        contentText = remainingText;
+                    } else if (TextUtils.isEmpty(remainingText) && !TextUtils.isEmpty(speedText)) {
+                        contentText = speedText;
                     } else {
                         contentText = speedText + ", " + remainingText;
                     }
 
-                    inboxStyle.setSummaryText(contentText);
-                    builder.setContentInfo(percentText);
-
+                    if (hasErrorStatus) {
+                        builder.addAction(com.android.internal.R.drawable.ic_media_play,
+                            res.getString(R.string.download_retry),
+                        PendingIntent.getBroadcast(mContext,
+                        0, retryIntent, PendingIntent.FLAG_UPDATE_CURRENT));
+                    } else {
+                        builder.addAction(com.android.internal.R.drawable.ic_media_pause,
+                            res.getString(R.string.download_pause),
+                        PendingIntent.getBroadcast(mContext,
+                        0, pauseIntent, PendingIntent.FLAG_UPDATE_CURRENT));
+                    }
+                    builder.addAction(com.android.internal.R.drawable.ic_media_stop,
+                            res.getString(R.string.download_stop),
+                        PendingIntent.getBroadcast(mContext,
+                        0, stopIntent, PendingIntent.FLAG_UPDATE_CURRENT));
                 } else if (type == TYPE_WAITING) {
-                    builder.setContentText(
-                            res.getString(R.string.notification_need_wifi_for_size));
-
+                    contentText = res.getString(R.string.notification_need_wifi_for_size);
+                    builder.addAction(com.android.internal.R.drawable.ic_media_stop,
+                            res.getString(R.string.download_stop),
+                        PendingIntent.getBroadcast(mContext,
+                        0, stopIntent, PendingIntent.FLAG_UPDATE_CURRENT));
+                } else if (type == TYPE_PAUSED) {
+                    contentText = res.getString(R.string.notification_paused_in_background);
+                    builder
+                       .addAction(com.android.internal.R.drawable.ic_media_play,
+                            res.getString(R.string.download_resume),
+                        PendingIntent.getBroadcast(mContext,
+                        0, resumeIntent, PendingIntent.FLAG_UPDATE_CURRENT))
+                       .addAction(com.android.internal.R.drawable.ic_media_stop,
+                            res.getString(R.string.download_stop),
+                        PendingIntent.getBroadcast(mContext,
+                        0, stopIntent, PendingIntent.FLAG_UPDATE_CURRENT));
                 } else if (type == TYPE_COMPLETE) {
-                    if (Downloads.Impl.isStatusError(info.mStatus)) {
-                        builder.setContentText(res.getText(R.string.notification_download_failed));
+                    if (hasErrorStatus) {
+                        contentText = res.getString(R.string.notification_download_failed);
+                        builder
+                          .addAction(com.android.internal.R.drawable.ic_media_play,
+                            res.getString(R.string.download_retry),
+                        PendingIntent.getBroadcast(mContext,
+                        0, retryIntent, PendingIntent.FLAG_UPDATE_CURRENT))
+                          .addAction(com.android.internal.R.drawable.ic_media_stop,
+                            res.getString(R.string.download_stop),
+                        PendingIntent.getBroadcast(mContext,
+                        0, stopIntent, PendingIntent.FLAG_UPDATE_CURRENT));
                     } else if (Downloads.Impl.isStatusSuccess(info.mStatus)) {
-                        builder.setContentText(
-                                res.getText(R.string.notification_download_complete));
+                        contentText = res.getString(R.string.notification_download_complete);
                     }
                 }
 
+                inboxStyle.setSummaryText(contentText);
+                builder.setContentText(contentText);
+                builder.setContentInfo(percentText);
                 notif = inboxStyle.build();
 
             } else {
                 final Notification.InboxStyle inboxStyle = new Notification.InboxStyle(builder);
 
+                final Uri uris = new Uri.Builder().scheme("active-dl").appendPath(tag).build();
+
                 for (DownloadInfo info : cluster) {
                     inboxStyle.addLine(getDownloadTitle(res, info));
                 }
 
-                if (type == TYPE_ACTIVE) {
-                    builder.setContentTitle(res.getQuantityString(
-                            R.plurals.notif_summary_active, cluster.size(), cluster.size()));
-                    builder.setContentText(remainingText);
-                    builder.setContentInfo(percentText);
-                    inboxStyle.setSummaryText(remainingText);
+                final Intent stopAllIntent = new Intent(Constants.ACTION_NOTIFICATION_STOP_ALL,
+                        uris, mContext, DownloadReceiver.class);
+                stopAllIntent.putExtra(DownloadManager.EXTRA_NOTIFICATION_CLICK_DOWNLOAD_IDS,
+                           getDownloadIds(cluster));
 
+                final Intent pauseAllIntent = new Intent(Constants.ACTION_NOTIFICATION_PAUSE_ALL,
+                        uris, mContext, DownloadReceiver.class);
+                pauseAllIntent.putExtra(DownloadManager.EXTRA_NOTIFICATION_CLICK_DOWNLOAD_IDS,
+                           getDownloadIds(cluster));
+
+                final Intent resumeAllIntent = new Intent(Constants.ACTION_NOTIFICATION_RESUME_ALL,
+                        uris, mContext, DownloadReceiver.class);
+                resumeAllIntent.putExtra(DownloadManager.EXTRA_NOTIFICATION_CLICK_DOWNLOAD_IDS,
+                           getDownloadIds(cluster));
+
+                final Intent retryAllIntent = new Intent(Constants.ACTION_NOTIFICATION_RETRY_ALL,
+                        uris, mContext, DownloadReceiver.class);
+                retryAllIntent.putExtra(DownloadManager.EXTRA_NOTIFICATION_CLICK_DOWNLOAD_IDS,
+                           getDownloadIds(cluster));
+
+                if (type == TYPE_ACTIVE) {
+                    if (hasErrorStatus) {
+                        builder.setContentTitle(res.getString(R.string.notification_download_failed));
+                    } else {
+                        builder.setContentTitle(res.getQuantityString(
+                            R.plurals.notif_summary_active, cluster.size(), cluster.size()));
+                    }
+                    if (TextUtils.isEmpty(speedText) && TextUtils.isEmpty(remainingText)) {
+                        contentText = res.getString(R.string.download_running);
+                    } else if (!TextUtils.isEmpty(remainingText) && TextUtils.isEmpty(speedText)) {
+                        contentText = remainingText;
+                    } else if (TextUtils.isEmpty(remainingText) && !TextUtils.isEmpty(speedText)) {
+                        contentText = speedText;
+                    } else {
+                        contentText = speedText + ", " + remainingText;
+                    }
+                    if (hasErrorStatus) {
+                        builder.addAction(com.android.internal.R.drawable.ic_media_play,
+                            res.getString(R.string.download_retry_all),
+                        PendingIntent.getBroadcast(mContext,
+                        0, retryAllIntent, PendingIntent.FLAG_UPDATE_CURRENT));
+                    } else {
+                        builder.addAction(com.android.internal.R.drawable.ic_media_pause,
+                            res.getString(R.string.download_pause_all),
+                        PendingIntent.getBroadcast(mContext,
+                        0, pauseAllIntent, PendingIntent.FLAG_UPDATE_CURRENT));
+                    }
+                    builder.addAction(com.android.internal.R.drawable.ic_media_stop,
+                            res.getString(R.string.download_stop),
+                        PendingIntent.getBroadcast(mContext,
+                        0, stopAllIntent, PendingIntent.FLAG_UPDATE_CURRENT));
                 } else if (type == TYPE_WAITING) {
                     builder.setContentTitle(res.getQuantityString(
                             R.plurals.notif_summary_waiting, cluster.size(), cluster.size()));
-                    builder.setContentText(
-                            res.getString(R.string.notification_need_wifi_for_size));
-                    inboxStyle.setSummaryText(
-                            res.getString(R.string.notification_need_wifi_for_size));
+                    contentText = res.getString(R.string.notification_need_wifi_for_size);
+                    builder.addAction(com.android.internal.R.drawable.ic_media_stop,
+                            res.getString(R.string.download_stop_all),
+                        PendingIntent.getBroadcast(mContext,
+                        0, stopAllIntent, PendingIntent.FLAG_UPDATE_CURRENT));
+                } else if (type == TYPE_PAUSED) {
+                    builder.setContentTitle(res.getQuantityString(
+                            R.plurals.notif_summary_waiting, cluster.size(), cluster.size()));
+                    contentText = res.getString(R.string.notification_paused_in_background);
+                    builder
+                       .addAction(com.android.internal.R.drawable.ic_media_play,
+                            res.getString(R.string.download_resume_all),
+                        PendingIntent.getBroadcast(mContext,
+                        0, resumeAllIntent, PendingIntent.FLAG_UPDATE_CURRENT))
+                       .addAction(com.android.internal.R.drawable.ic_media_stop,
+                            res.getString(R.string.download_stop_all),
+                        PendingIntent.getBroadcast(mContext,
+                        0, stopAllIntent, PendingIntent.FLAG_UPDATE_CURRENT));
+                } else if (type == TYPE_COMPLETE) {
+                    if (hasErrorStatus) {
+                        contentText = res.getString(R.string.notification_download_failed);
+                        builder
+                          .addAction(com.android.internal.R.drawable.ic_media_play,
+                            res.getString(R.string.download_retry_all),
+                        PendingIntent.getBroadcast(mContext,
+                        0, retryAllIntent, PendingIntent.FLAG_UPDATE_CURRENT))
+                          .addAction(com.android.internal.R.drawable.ic_media_stop,
+                            res.getString(R.string.download_stop_all),
+                        PendingIntent.getBroadcast(mContext,
+                        0, stopAllIntent, PendingIntent.FLAG_UPDATE_CURRENT));
+                    }
                 }
 
+                inboxStyle.setSummaryText(contentText);
+                builder.setContentText(contentText);
+                builder.setContentInfo(percentText);
                 notif = inboxStyle.build();
             }
 
@@ -376,6 +572,8 @@ public class DownloadNotifier {
     private static String buildNotificationTag(DownloadInfo info) {
         if (info.mStatus == Downloads.Impl.STATUS_QUEUED_FOR_WIFI) {
             return TYPE_WAITING + ":" + info.mPackage;
+        } else if (info.mStatus == Downloads.Impl.STATUS_PAUSED_BY_MANUAL) {
+            return TYPE_PAUSED + ":" + info.mPackage;
         } else if (isActiveAndVisible(info)) {
             return TYPE_ACTIVE + ":" + info.mPackage;
         } else if (isCompleteAndVisible(info)) {
@@ -395,7 +593,7 @@ public class DownloadNotifier {
     }
 
     private static boolean isActiveAndVisible(DownloadInfo download) {
-        return download.mStatus == STATUS_RUNNING &&
+        return Downloads.Impl.isStatusInformational(download.mStatus) &&
                 (download.mVisibility == VISIBILITY_VISIBLE
                 || download.mVisibility == VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
     }
@@ -404,5 +602,15 @@ public class DownloadNotifier {
         return Downloads.Impl.isStatusCompleted(download.mStatus) &&
                 (download.mVisibility == VISIBILITY_VISIBLE_NOTIFY_COMPLETED
                 || download.mVisibility == VISIBILITY_VISIBLE_NOTIFY_ONLY_COMPLETION);
+    }
+
+    private boolean isErrorStatus(int status) {
+        boolean isErrorStatus = Downloads.Impl.isStatusError(status)
+               || Downloads.Impl.isStatusClientError(status)
+               || Downloads.Impl.isStatusServerError(status)
+               || status == Downloads.Impl.STATUS_INSUFFICIENT_SPACE_ERROR
+               || status == Downloads.Impl.STATUS_DEVICE_NOT_FOUND_ERROR
+               || status == Downloads.Impl.STATUS_WAITING_FOR_NETWORK;
+        return isErrorStatus;
     }
 }
