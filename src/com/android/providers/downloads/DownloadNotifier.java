@@ -180,11 +180,11 @@ public class DownloadNotifier {
             // Show relevant icon
             if (type == TYPE_ACTIVE) {
                 if (hasErrorStatus) {
-                    builder.setSmallIcon(android.R.drawable.stat_sys_warning);
+                    builder.setSmallIcon(android.R.drawable.stat_sys_downloadicon);
                 } else {
                     builder.setSmallIcon(android.R.drawable.stat_sys_download);
                 }
-                builder.setSmallIcon(android.R.drawable.stat_sys_warning);
+                builder.setSmallIcon(android.R.drawable.stat_sys_downloadicon);
              } else if (type == TYPE_PAUSED) {
                 builder.setSmallIcon(com.android.internal.R.drawable.ic_media_pause);
             } else if (type == TYPE_COMPLETE) {
