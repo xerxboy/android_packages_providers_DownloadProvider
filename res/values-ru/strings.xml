@@ -23,6 +23,7 @@
     <string name="permdesc_downloadManagerAdvanced" msgid="2659546004160962761">"Приложение получит доступ к расширенным функциям диспетчера загрузок. Вредоносные программы смогут таким образом прерывать загрузки и просматривать личную информацию."</string>
     <string name="permlab_downloadCompletedIntent" msgid="945913803765675685">"Отправить оповещение о загрузке."</string>
     <string name="permdesc_downloadCompletedIntent" msgid="2094706189855699533">"Приложение сможет отправлять оповещения о завершенных загрузках. Вредоносные программы смогут таким образом мешать работе приложений, загружающих файлы."</string>
+    <string name="download_speed"><xliff:g id="duration">%s</xliff:g>/c</string>
     <string name="permlab_seeAllExternal" product="nosdcard" msgid="4084575448409212628">"Отслеживать все загрузки на USB-накопитель"</string>
     <string name="permlab_seeAllExternal" product="default" msgid="140058400609165726">"Просмотреть все загрузки на SD-карту"</string>
     <string name="permdesc_seeAllExternal" msgid="1672759909065511233">"Приложение получит доступ ко всем загрузкам на SD-карте независимо от того, через какое ПО они были загружены."</string>
@@ -63,4 +64,11 @@
     <string name="download_running" msgid="3925050393361158266">"Загружается"</string>
     <string name="download_error" msgid="5144180777324573236">"Сбой"</string>
     <string name="download_running_percent" msgid="4305080769167320204">"Скачано <xliff:g id="PERCENTAGE">%s</xliff:g>"</string>
+    <string name="download_paused">Приостановлено</string>
+    <string name="download_paused_percent">Приостановлено, %d%%</string>
+    <string name="button_resume_download">Возобновить</string>
+    <string name="button_pause_download">пауза</string>
+    <string name="notif_summary_paused">%d приостановл.</string>
+
+    
 </resources>
