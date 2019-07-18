@@ -1065,16 +1065,6 @@ public final class DownloadProvider extends ContentProvider {
     }
 
     /**
-     * @return true if we should restrict the columns readable by this caller
-     */
-    private boolean shouldRestrictVisibility() {
-        int callingUid = Binder.getCallingUid();
-        return Binder.getCallingPid() != Process.myPid() &&
-                callingUid != mSystemUid &&
-                callingUid != mDefContainerUid;
-    }
-
-    /**
      * Updates a row in the database
      */
     @Override
